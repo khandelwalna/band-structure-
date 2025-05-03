@@ -1,0 +1,40 @@
+import numpy as np
+
+# Define the list of 12 k-points
+k_points = np.array([
+    [0, 0, 0],  # k-point 1
+    [0.4999999999999999, -2.465190328815662e-32, 0.4999999999999999],  # k-point 2
+    [0.4999999999999999, 0.24999999999999994 ,0.7499999999999999],  # k-point 3
+    [0.37499999999999994, 0.37499999999999994, 0.7499999999999999],  # k-point 4
+    [0.0, 0.0 ,0.0],  # k-point 5
+    [0.49999999999999994, 0.5, 0.49999999999999994],  # k-point 6
+    [0.6249999999999999, 0.25, 0.6249999999999999],  # k-point 7
+    [0.4999999999999999 ,0.24999999999999994, 0.7499999999999999],  # k-point 8
+    [0.49999999999999994 ,0.5, 0.49999999999999994],  # k-point 9
+    [0.37499999999999994, 0.37499999999999994 ,0.7499999999999999],  # k-point 10
+    [0.6249999999999999, 0.25 ,0.6249999999999999],  # k-point 11
+    [0.4999999999999999, -2.465190328815662e-32, 0.4999999999999999]   # k-point 12
+])
+
+# Number of interpolated points between each consecutive pair of k-points
+n_interpolated_points = 3
+
+# List to store all interpolated k-points
+interpolated_kpoints = []
+
+# Iterate over each consecutive pair of k-points and interpolate
+for i in range(len(k_points) - 1):
+    k1 = k_points[i]
+    k2 = k_points[i + 1]
+    
+    # Interpolate between k1 and k2
+    for j in range(n_interpolated_points + 1):  # +1 to include both k1 and k2
+        k_point = k1 + (k2 - k1) * (j / (n_interpolated_points + 1))
+        interpolated_kpoints.append(k_point)
+
+# Save the interpolated k-points to a text file
+with open("interpolated_kpoints_12.txt", "w") as f:
+    for kpoint in interpolated_kpoints:
+        f.write(f"{kpoint[0]} {kpoint[1]} {kpoint[2]}\n")
+
+print("Interpolated k-points saved to 'interpolated_kpoints_12.txt'")
