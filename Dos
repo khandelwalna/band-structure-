@@ -1,0 +1,33 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+def compute_dos(eigenvalues, sigma=0.08, n_energy=1000):
+    """
+    Compute DOS using Gaussian broadening.
+    """
+    vmin = np.min(eigenvalues)
+    vmax = np.max(eigenvalues)
+    energies = np.linspace(vmin - 0.1, vmax + 0.1, n_energy)
+    dos = np.zeros_like(energies)
+
+    c = -0.5 / sigma**2
+    for i, E in enumerate(energies):
+        arg = c * (eigenvalues - E)**2
+        dos[i] = np.sum(np.exp(arg))
+
+    # Normalize
+    de = energies[1] - energies[0]
+    dos /= sigma * np.sqrt(2 * np.pi) * len(eigenvalues)
+
+    # Plot
+    plt.plot(energies, dos, label="DOS")
+    plt.xlabel("Energy (eV)")
+    plt.ylabel("DOS (states/eV)")
+    plt.title("Density of States")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+    return energies, dos
+
+compute_dos(shifted_vqd_results)
