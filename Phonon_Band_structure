@@ -1,0 +1,263 @@
+import numpy as np
+
+# Function to load k-points from file
+def load_k_points(file_name):
+    k_points = np.loadtxt(file_name)
+    return k_points
+
+# Load the k-points from 'k_points.dat'
+k_points = load_k_points (r'C:\Users\naman\phonon_dos\hetero\graph.txt')
+print(k_points)  # Print to check
+
+import tbmodels                                      
+import numpy as np
+
+# Load the tight-binding model (tbmodel) from the 'wannier_hr.dat' file
+model = tbmodels.Model.from_wannier_files(hr_file=r'C:\Users\naman\phonon1\BN\phonopyTB_hr.dat')
+
+
+# Example: k-points read from a separate file
+def load_k_points(file_name):
+    k_points = np.loadtxt(file_name)  # Load k-points from a text file
+    return k_points
+
+k_points = load_k_points(r'C:\Users\naman\phonon_dos\hetero\graph.txt')  
+
+# For each k-point, we will extract the corresponding Hamiltonian
+hamiltonians_for_vqe = []
+
+for k_point in k_points:
+    # Extract the Hamiltonian for this k-point from the TBModel
+    H_k   = model.hamilton(k_point)
+    hamiltonians_for_vqe.append(H_k)
+
+hamiltonians_for_vqe = np.array(hamiltonians_for_vqe)  # List of Hamiltonians for VQE
+print("Hamiltonians for VQE:", hamiltonians_for_vqe)
+
+from qiskit_aer import AerSimulator, Aer
+from qiskit.utils import QuantumInstance, algorithm_globals
+from qiskit.algorithms import VQE
+import itertools
+import functools
+from qiskit.opflow import X,Y,Z,I
+from qiskit.circuit.library import EfficientSU2
+
+
+def decompose_Hamiltonian(H):
+    """Decompose Hermitian matrix into Pauli basis."""
+    # Inspired from
+    # https://github.com/PennyLaneAI/pennylane/blob/master/pennylane/utils.py#L45
+    # https://qiskit.org/documentation/tutorials/algorithms/04_vqe_advanced.html
+    x, y = H.shape
+    N = int(np.log2(len(H)))
+    if len(H) - 2 ** N != 0 or x != y:
+        raise ValueError(
+            "Hamiltonian should be in the form (2^n x 2^n), for any n>=1"
+        )
+    pauilis = [I, X, Y, Z]
+    decomposedH = 0
+    for term in itertools.product(pauilis, repeat=N):
+        matrices = [i.to_matrix() for i in term]
+        # coefficient of the pauli string = (1/2^N) * (Tr[pauliOp x H])
+        coeff = np.trace(functools.reduce(np.kron, matrices) @ H) / (2 ** N)
+        coeff = np.real_if_close(coeff).item()
+        if coeff == 0:
+            continue
+        obs = 1
+        for i in term:
+            obs = obs ^ i
+        decomposedH += coeff * obs
+    return decomposedH
+
+
+
+class HermitianSolver(object):
+    """Solve a Hermitian matrix using VQE and VQD."""
+
+    def __init__(self, mat=[], verbose=False, penalty_lambda=None):
+        """Initialize with a numpy Hermitian matrix."""
+        mat = np.array(mat, dtype=complex)
+        if mat.shape[0] != mat.shape[1]:
+            raise ValueError("Matrix must be square.")
+
+        self.orig_dim = mat.shape[0]
+        self.verbose = verbose
+
+        # Number of qubits (pad to next power of 2)
+        N = int(np.ceil(np.log2(self.orig_dim)))
+        pad_dim = 2 ** N
+
+        # Pad Hamiltonian
+        hk = np.zeros((pad_dim, pad_dim), dtype=complex)
+        hk[: self.orig_dim, : self.orig_dim] = mat
+
+        # Penalize unphysical padded states
+        if pad_dim > self.orig_dim:
+            if penalty_lambda is None:
+                penalty_lambda = 10.0 * np.linalg.norm(mat)
+            for idx in range(self.orig_dim, pad_dim):
+                hk[idx, idx] = penalty_lambda
+
+        self.mat = hk
+        self.pad_dim = pad_dim
+        self.n_qubits_count = N
+
+        if not self.check_hermitian():
+            raise ValueError("Matrix must be Hermitian.")
+
+    def n_qubits(self):
+        """Return required number of qubits."""
+        return self.n_qubits_count
+
+    def check_hermitian(self):
+        """Check if matrix is Hermitian."""
+        return np.allclose(self.mat, self.mat.conj().T)
+
+    def run_numpy(self):
+        """Return eigenvalues/eigenvectors of the *original* matrix (not padded)."""
+        vals, vecs = np.linalg.eigh(self.mat[:self.orig_dim, :self.orig_dim])
+        return vals, vecs
+
+    def run_vqe(
+        self,
+        backend=Aer.get_backend("statevector_simulator"),
+        var_form=None,
+        optimizer=None,
+        reps=None,
+        mode="min_val",
+    ):
+        """Run variational quantum eigensolver."""
+        seed = 50
+        algorithm_globals.random_seed = seed
+        N = self.n_qubits()
+        qi = QuantumInstance(
+            backend,
+            seed_transpiler=seed,
+            seed_simulator=seed,
+        )
+
+        # Scale for stability
+        scale = np.max(np.abs(self.mat))
+        if scale < 1e-12:
+            scale = 1.0
+
+        if mode == "max_val":
+            Hamil_qop = decompose_Hamiltonian(-1 * self.mat / scale)
+        else:
+            Hamil_qop = decompose_Hamiltonian(self.mat / scale)
+
+        if var_form is None:
+            if reps is None:
+                reps = 5
+            var_form = EfficientSU2(N, reps=reps)
+
+        if optimizer is None:
+            vqe = VQE(var_form, quantum_instance=qi)
+        else:
+            vqe = VQE(var_form, optimizer=optimizer, quantum_instance=qi)
+
+        result = vqe.compute_minimum_eigenvalue(operator=Hamil_qop)
+        en = np.real(result.eigenvalue) * scale
+
+        if mode == "max_val":
+            en = -1 * en
+
+        # Try extracting eigenstate
+        try:
+            state = result.eigenstate
+            if isinstance(state, dict):  # dict of amplitudes
+                vec = np.array([state.get(bin(i)[2:].zfill(N), 0) for i in range(2**N)])
+                statevec = vec.astype(complex)
+            else:
+                statevec = np.array(state, dtype=complex)
+        except Exception:
+            # fallback: construct statevector from ansatz
+            params = result.optimal_point
+            sv = Statevector(var_form.bind_parameters(params))
+            statevec = sv.data
+
+        statevec = statevec / np.linalg.norm(statevec)
+        return en, result, statevec
+
+    def run_vqd(
+        self,
+        backend=Aer.get_backend("statevector_simulator"),
+        var_form=None,
+        optimizer=None,
+        reps=5,
+        deflation_mu=None,
+        strategy="penalty",  # "penalty" or "subtraction"
+    ):
+        """Run variational quantum deflation (returns exactly orig_dim states)."""
+        tmp = HermitianSolver(self.mat, verbose=self.verbose)  # always padded
+
+        if deflation_mu is None:
+            deflation_mu = 10.0 * np.linalg.norm(tmp.mat)
+
+        eigvals, eigstates = [], []
+
+        for r in range(self.orig_dim):
+            val, vqe_result, statevec = tmp.run_vqe(
+                backend=backend,
+                var_form=var_form,
+                optimizer=optimizer,
+                reps=reps,
+            )
+
+            eigvals.append(val)
+            eigstates.append(statevec[: self.orig_dim] / np.linalg.norm(statevec[: self.orig_dim]))
+
+            # Build projector in full padded space
+            proj_full = np.outer(statevec, np.conj(statevec))
+
+            if strategy == "penalty":
+                # push found state upwards
+                tmp.mat = tmp.mat + deflation_mu * proj_full
+            elif strategy == "subtraction":
+                # subtract contribution at its eigenvalue
+                tmp.mat = tmp.mat - val * proj_full
+            else:
+                raise ValueError("strategy must be 'penalty' or 'subtraction'")
+
+            tmp = HermitianSolver(tmp.mat, verbose=self.verbose)
+
+        eigvals = np.array(eigvals)
+        eigstates = np.array(eigstates)
+        order = np.argsort(eigvals)
+        return eigvals[order], eigstates[order]
+# call the functions and plot numpy and vqd separately
+# plotting
+import numpy as np
+
+import matplotlib.pyplot as plt
+
+# Extract eigenvalues from numpy_results and A
+numpy_bands = np.array([eigvals for eigvals, eigvecs in numpy_results])  # shape: (n_kpoints, n_bands)
+vqd_bands = np.array(A)  # shape: (n_kpoints, n_bands)
+
+plt.figure(figsize=(10, 6))
+x_axis = np.arange(len(numpy_bands))
+
+# Plot numpy_results bands
+for band_idx in range(numpy_bands.shape[1]):
+    plt.plot(x_axis, numpy_bands[:, band_idx].real, color='r',alpha=1,linewidth = 5,linestyle ="--", label='Numpy' if band_idx == 0 else None)
+
+# Plot VQD bands
+for band_idx in range(vqd_bands.shape[1]):
+    plt.plot(x_axis, vqd_bands[:, band_idx].real, color='b',marker='o',markersize = 7,linestyle="",lw=1,alpha=1, label='VQD' if band_idx == 0 else None)
+
+plt.tick_params(width=2.5, length=10, direction='in', which='major')  # Major ticks
+plt.tick_params(width=1.5, length=5, direction='in', which='minor')  # Minor ticks
+for spine in plt.gca().spines.values():
+    spine.set_linewidth(4)
+
+plt.ylabel('frequency', fontsize=20, fontweight='bold')
+plt.grid(axis='y', linestyle='', linewidth=0.5)
+plt.grid(axis='x', linestyle='--', linewidth=4,color = 'black')
+plt.axhline(y=0, color='black', linestyle='--', linewidth=4)
+plt.yticks(fontsize=20, fontweight='bold')
+plt.ylim(0,)
+plt.xlim(0,)
+plt.grid(True)
+plt.tight_layout()
+plt.show()
