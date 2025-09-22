@@ -1,0 +1,158 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+def get_pdos_from_eigs(
+    eigvals_all,
+    eigvecs_all,
+    efermi=0.0,
+    xrange=None,
+    nenergy=400,
+    sigma=0.05,
+    orbital_groups=None,
+    stacked=False,
+    separate=True,
+    filename="pdos.png",
+    savefig=True,
+    show=True,
+):
+    """
+    Calculate PDOS from precomputed eigenvalues + eigenvectors.
+    Produces separate orbital plots + combined plot.
+
+    Parameters
+    ----------
+    eigvals_all : ndarray (nk, nbands)
+        Eigenvalues for each k-point (in eV).
+    eigvecs_all : ndarray (nk, nbands, nbasis)
+        Corresponding eigenvectors.
+    efermi : float
+        Fermi energy (shift energies so EF=0).
+    xrange : list [Emin, Emax]
+        Energy window. If None, taken from eigenvalues.
+    nenergy : int
+        Number of energy bins.
+    sigma : float
+        Gaussian smearing width (eV).
+    orbital_groups : dict
+        Orbital projection groups, e.g. {"s":[0], "px":[1], "py":[2], "pz":[3]}.
+    stacked : bool
+        If True, combined plot uses stacked filled curves.
+    separate : bool
+        If True, also make one plot per orbital group.
+    filename : str
+        Base name for output figure.
+    savefig : bool
+        Save the plots to file.
+    show : bool
+        Show the figure interactively.
+
+    Returns
+    -------
+    energies, dos, pdos_dict
+    """
+    eigvals_all = np.array(eigvals_all) - efermi
+    eigvecs_all = np.array(eigvecs_all)
+    nk, nbands = eigvals_all.shape
+
+    # --- Energy grid ---
+    if xrange is None:
+        vmin, vmax = eigvals_all.min(), eigvals_all.max()
+        delta = (vmax - vmin) * 0.05
+        xrange = [vmin - delta, vmax + delta]
+
+    energies = np.linspace(xrange[0], xrange[1], nenergy)
+    dos = np.zeros_like(energies)
+    pdos = {orb: np.zeros_like(energies) for orb in (orbital_groups or {})}
+
+    pref = 1.0 / (sigma * np.sqrt(2*np.pi))
+
+    # --- DOS accumulation ---
+    for k in range(nk):
+        for n, e in enumerate(eigvals_all[k]):
+            vec = eigvecs_all[k, n]
+            g = pref * np.exp(-(energies - e)**2 / (2*sigma**2))
+            dos += g
+            if orbital_groups is not None:
+                for orb, idx in orbital_groups.items():
+                    weight = np.sum(np.abs(vec[idx])**2)
+                    pdos[orb] += weight * g
+
+    dos /= nk
+    for orb in pdos:
+        pdos[orb] /= nk
+
+    # --- Separate orbital plots ---
+    if separate and orbital_groups is not None:
+        for orb, dos_orb in pdos.items():
+            plt.figure(figsize=(6,4))
+            plt.plot(energies, dos_orb, lw=1.5, label=f"{orb} contribution")
+            plt.axvline(0, color="gray", ls="--", lw=1)
+            plt.xlabel("Energy (eV)")
+            plt.ylabel("DOS (a.u.)")
+            plt.title(f"PDOS - {orb}")
+            plt.legend()
+            plt.tight_layout()
+            if savefig:
+                plt.savefig(f"{orb}_pdos.png", dpi=300)
+            if show:
+                plt.show()
+            else:
+                plt.close()
+
+    # --- Combined plot ---
+    plt.figure(figsize=(8,6))
+    if stacked and orbital_groups is not None:
+        labels = list(pdos.keys())
+        values = np.vstack([pdos[orb] for orb in labels])
+        plt.stackplot(
+            energies, values,
+            labels=labels,
+            colors=plt.cm.tab10.colors[:len(labels)],
+            alpha=0.8
+        )
+        plt.plot(energies, dos, color="k", lw=1.5, label="Total DOS")
+    else:
+        plt.plot(energies, dos, color="k", lw=1.5, label="Total DOS")
+        if orbital_groups is not None:
+            colors = plt.cm.tab10.colors
+            for i, (orb, dos_orb) in enumerate(pdos.items()):
+                plt.plot(energies, dos_orb, lw=1.2,
+                         label=orb, color=colors[i % len(colors)])
+
+    plt.axvline(0, color="gray", ls="--", lw=1, label="Fermi")
+    plt.xlabel("Energy (eV)")
+    plt.ylabel("DOS (a.u.)")
+    plt.xlim(-5,5)
+    plt.legend()
+    plt.tight_layout()
+
+    if savefig:
+        plt.savefig(filename, dpi=300)
+    if show:
+        plt.show()
+    else:
+        plt.close()
+
+    return energies, dos, pdos
+# call the function to plot PDOS
+orbital_groups = {
+    "s":  [0],
+    "p": [1,2,3],
+    "d":  [4, 5, 6, 7]
+}
+
+# Extract eigenvalues and eigenvectors from vqd_results
+eigvals_all = [eigvals for eigvals, eigvecs in vqd_results]
+eigvecs_all = [eigvecs for eigvals, eigvecs in vqd_results]
+
+# If you want to use shifted eigenvalues, add shift_value
+eigvals_all = [eigvals + shift_value for eigvals in eigvals_all]
+
+energies, dos, pdos = get_pdos_from_eigs(
+    eigvals_all, eigvecs_all,
+    efermi=0.0,
+    orbital_groups=orbital_groups,
+    stacked=True,     # combined plot = line overlay
+    separate=True,     # also make separate plots
+    filename="pdos_combined.png"
+)
